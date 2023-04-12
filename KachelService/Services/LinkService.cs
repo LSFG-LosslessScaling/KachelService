@@ -1,7 +1,12 @@
 ﻿using KachelService.Database;
 using KachelService.Model;
 using KachelService.Model.Customer;
+using System.Linq.Expressions;
+using System.Security.Cryptography;
+using System.Security.Cryptography.Xml;
+using System.Text;
 using System.Text.Json;
+using System.Web;
 
 namespace KachelService.Services
 {
@@ -100,7 +105,7 @@ namespace KachelService.Services
                         var entry = new LinkEntry()
                         {
                             Query = requestUrl,
-                            
+
                             Encrypted = cr,
                             BaseUrl = url
                         };
@@ -166,52 +171,103 @@ namespace KachelService.Services
 
                 if (!string.IsNullOrEmpty(requestUrl))
                 {
-
-                    await using var db = new Pv100JahreContext();
-
-                    string cryptString = String.Empty;
-
-                    if (!Configuration.UseAES)
+                    try
                     {
-                        // Use sqlserver crypt.
-                        var cryptResult = await db.Procedures.CrypeUrlAsync(requestUrl);
-                        if (cryptResult != null && cryptResult.Any())
+                        await using var db = new Pv100JahreContext();
+
+                        string cryptString = String.Empty;
+
+                        if (!Configuration.UseAES)
                         {
-                            var cr = cryptResult.First();
-                            cryptString = cr.text;
+                            // Use sqlserver crypt.
+                            var cryptResult = await db.Procedures.CrypeUrlAsync(requestUrl);
+                            var myTest = TestEnc(requestUrl);
+
+                            if (cryptResult != null && cryptResult.Any())
+                            {
+                                var cr = cryptResult.First();
+                                cryptString = cr.text;
+                            }
                         }
-                    }
-                    else
-                    {
-                        var aes = new Aes();
-                        cryptString = aes.EncryptToBase64(requestUrl);
-                    }
-
-                    if (!string.IsNullOrEmpty(cryptString))
-                    {
-                        var cr = cryptString;
-                        var entry = new LinkEntry()
+                        else
                         {
-                            Query = requestUrl,
+                            var aes = new Aes();
+                            cryptString = aes.EncryptToBase64(requestUrl);
+                        }
 
-                            Encrypted = cr,
-                            BaseUrl = url
-                        };
-
-                        db.Links.Add(new Links()
+                        if (!string.IsNullOrEmpty(cryptString))
                         {
-                            Created = DateTime.Now,
-                            Data = JsonSerializer.Serialize(entry,
-                                new JsonSerializerOptions() { PropertyNameCaseInsensitive = true })
-                        });
+                            var cr = cryptString;
+                            var entry = new LinkEntry()
+                            {
+                                Query = requestUrl,
 
-                        await db.SaveChangesAsync();
+                                Encrypted = cr,
+                                BaseUrl = url
+                            };
 
-                        return $"{url}{cr}";
+                            db.Links.Add(new Links()
+                            {
+                                Created = DateTime.Now,
+                                Data = JsonSerializer.Serialize(entry,
+                                    new JsonSerializerOptions() { PropertyNameCaseInsensitive = true })
+                            });
+
+                            await db.SaveChangesAsync();
+
+                            return $"{url}{cr}";
+                        }
+
                     }
+                    catch (Exception ex)
+                    {
+
+                    }
+
                 }
             }
             return string.Empty;
         }
+
+        private string TestEnc(string plaintext)
+        {
+
+            string passphrase = "KM#43deV!DnGB$YXrSJt";
+
+            byte[] salt = new byte[16];
+            using (var rng = new RNGCryptoServiceProvider())
+            {
+                rng.GetBytes(salt);
+            }
+
+            var key = new Rfc2898DeriveBytes(passphrase, salt, 1000);
+            byte[] keyBytes = key.GetBytes(32);
+            byte[] ivBytes = key.GetBytes(16);
+
+            using (var aes = new AesCryptoServiceProvider())
+            {
+                aes.Key = keyBytes;
+                aes.IV = ivBytes;
+                aes.Mode = CipherMode.CBC;
+                aes.Padding = PaddingMode.PKCS7;
+
+                byte[] encrypted;
+
+                using (var ms = new MemoryStream())
+                using (var cs = new CryptoStream(ms, aes.CreateEncryptor(), CryptoStreamMode.Write))
+                {
+                    byte[] plaintextBytes = Encoding.UTF8.GetBytes(plaintext);
+                    cs.Write(plaintextBytes, 0, plaintextBytes.Length);
+                    cs.FlushFinalBlock();
+                    encrypted = ms.ToArray();
+                }
+
+                string base64Encoded = Convert.ToBase64String(encrypted);
+                string urlEncoded = HttpUtility.UrlEncode(base64Encoded);
+
+                return urlEncoded;
+            }
+        }
     }
+
 }
